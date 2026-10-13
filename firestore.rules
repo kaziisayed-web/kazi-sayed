@@ -1,0 +1,187 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Default-deny global safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helper Functions ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.email == 'kaziisayed@gmail.com' && request.auth.token.email_verified == true)
+      );
+    }
+
+    // --- Entity Validation Functions ---
+    function isValidUser(data) {
+      return data.userId is string && data.userId.size() <= 128 &&
+             data.displayName is string && data.displayName.size() >= 2 && data.displayName.size() <= 100 &&
+             (!('email' in data) || (data.email is string && data.email.size() <= 150)) &&
+             (!('pseudonym' in data) || (data.pseudonym is string && data.pseudonym.size() <= 100)) &&
+             (!('bio' in data) || (data.bio is string && data.bio.size() <= 500)) &&
+             (!('avatar' in data) || (data.avatar is string && data.avatar.size() <= 2000)) &&
+             (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 2000)) &&
+             (!('language' in data) || data.language in ['en', 'bn']) &&
+             (!('role' in data) || data.role in ['user', 'admin']);
+    }
+
+    function isValidPost(data) {
+      return data.id is string && isValidId(data.id) &&
+             data.authorId is string && data.authorId.size() <= 128 &&
+             data.title is string && data.title.size() >= 3 && data.title.size() <= 300 &&
+             data.content is string && data.content.size() >= 5 && data.content.size() <= 5000 &&
+             data.postType in ['VENT', 'DISCUSSION', 'PRICE_TALK'] &&
+             data.category is string && data.category.size() <= 100 &&
+             (!('moodTag' in data) || data.moodTag in ['ANGRY', 'FRUSTRATED', 'SAD', 'CONFUSED', 'NEED_SUPPORT', 'NONE']) &&
+             (!('ventMode' in data) || data.ventMode in ['JUST_LISTEN', 'ADVICE_WELCOME']) &&
+             (!('isAnonymous' in data) || data.isAnonymous is bool) &&
+             (!('pseudonym' in data) || (data.pseudonym is string && data.pseudonym.size() <= 100)) &&
+             (!('supportiveCount' in data) || data.supportiveCount is int) &&
+             (!('helpfulCount' in data) || data.helpfulCount is int) &&
+             (!('commentCount' in data) || data.commentCount is int) &&
+             (!('priceQuoted' in data) || data.priceQuoted is number) &&
+             (!('priceFair' in data) || data.priceFair is number) &&
+             (!('priceLocation' in data) || (data.priceLocation is string && data.priceLocation.size() <= 100)) &&
+             (!('priceCondition' in data) || (data.priceCondition is string && data.priceCondition.size() <= 50)) &&
+             (!('brandModel' in data) || (data.brandModel is string && data.brandModel.size() <= 100)) &&
+             (!('pollQuestion' in data) || (data.pollQuestion is string && data.pollQuestion.size() <= 300)) &&
+             (!('pollOptions' in data) || (data.pollOptions is string && data.pollOptions.size() <= 500)) &&
+             (!('pollVotes' in data) || (data.pollVotes is string && data.pollVotes.size() <= 500)) &&
+             (!('isHidden' in data) || data.isHidden is bool);
+    }
+
+    function isValidComment(data) {
+      return data.id is string && isValidId(data.id) &&
+             data.postId is string && isValidId(data.postId) &&
+             data.authorId is string && data.authorId.size() <= 128 &&
+             data.content is string && data.content.size() >= 1 && data.content.size() <= 2000 &&
+             (!('isAnonymous' in data) || data.isAnonymous is bool) &&
+             (!('pseudonym' in data) || (data.pseudonym is string && data.pseudonym.size() <= 100)) &&
+             (!('supportiveCount' in data) || data.supportiveCount is int) &&
+             (!('isAiResponse' in data) || data.isAiResponse is bool);
+    }
+
+    function isValidNotification(data) {
+      return data.id is string && isValidId(data.id) &&
+             data.userId is string && data.userId.size() <= 128 &&
+             data.title is string && data.title.size() <= 150 &&
+             data.message is string && data.message.size() <= 500 &&
+             data.type in ['SUPPORT', 'COMMENT', 'AI', 'ADMIN'] &&
+             (!('relatedPostId' in data) || (data.relatedPostId is string && data.relatedPostId.size() <= 128)) &&
+             (!('isRead' in data) || data.isRead is bool);
+    }
+
+    function isValidReport(data) {
+      return data.id is string && isValidId(data.id) &&
+             data.reporterId is string && data.reporterId.size() <= 128 &&
+             data.postId is string && isValidId(data.postId) &&
+             data.reason is string && data.reason.size() <= 150 &&
+             (!('details' in data) || (data.details is string && data.details.size() <= 500)) &&
+             data.status in ['PENDING', 'RESOLVED', 'DISMISSED'];
+    }
+
+    // --- Collection Rules ---
+
+    // 1. Users
+    match /users/{userId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn() &&
+                       request.auth.uid == userId &&
+                       incoming().userId == request.auth.uid &&
+                       (!('role' in incoming()) || incoming().role == 'user') &&
+                       incoming().createdAt is timestamp &&
+                       incoming().createdAt <= request.time &&
+                       isValidUser(incoming());
+      allow update: if isSignedIn() &&
+                       request.auth.uid == userId &&
+                       incoming().userId == existing().userId &&
+                       (!('createdAt' in incoming()) || incoming().createdAt == existing().createdAt) &&
+                       (!('role' in incoming()) || incoming().role == existing().role) &&
+                       isValidUser(incoming());
+      allow delete: if false;
+    }
+
+    // 2. Posts
+    match /posts/{postId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn() &&
+                       incoming().authorId == request.auth.uid &&
+                       incoming().createdAt is timestamp &&
+                       incoming().createdAt <= request.time &&
+                       isValidPost(incoming());
+      allow update: if isSignedIn() &&
+                       isValidPost(incoming()) && (
+                         // Author edit (authorId & createdAt immutable)
+                         (existing().authorId == request.auth.uid &&
+                          incoming().authorId == existing().authorId &&
+                          incoming().createdAt == existing().createdAt) ||
+                         // Community reactions and comments count update
+                         incoming().diff(existing()).affectedKeys().hasOnly(['supportiveCount', 'helpfulCount', 'commentCount', 'pollVotes', 'updatedAt']) ||
+                         isAdmin()
+                       );
+      allow delete: if isSignedIn() && (existing().authorId == request.auth.uid || isAdmin());
+
+      // 3. Comments subcollection
+      match /comments/{commentId} {
+        allow get, list: if isSignedIn();
+        allow create: if isSignedIn() &&
+                         incoming().authorId == request.auth.uid &&
+                         incoming().createdAt is timestamp &&
+                         incoming().createdAt <= request.time &&
+                         isValidComment(incoming());
+        allow update: if isSignedIn() &&
+                         isValidComment(incoming()) && (
+                           (existing().authorId == request.auth.uid &&
+                            incoming().authorId == existing().authorId &&
+                            incoming().createdAt == existing().createdAt) ||
+                           incoming().diff(existing()).affectedKeys().hasOnly(['supportiveCount'])
+                         );
+        allow delete: if isSignedIn() && (existing().authorId == request.auth.uid || isAdmin());
+      }
+    }
+
+    // 4. Notifications subcollection
+    match /users/{userId}/notifications/{notificationId} {
+      allow get, list: if isSignedIn() && request.auth.uid == userId;
+      allow create: if isSignedIn() && incoming().userId == userId && isValidNotification(incoming());
+      allow update: if isSignedIn() && request.auth.uid == userId && incoming().diff(existing()).affectedKeys().hasOnly(['isRead']);
+      allow delete: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    // 5. Reports collection (moderator-only reads)
+    match /reports/{reportId} {
+      allow get, list: if isAdmin();
+      allow create: if isSignedIn() &&
+                       incoming().reporterId == request.auth.uid &&
+                       incoming().createdAt is timestamp &&
+                       incoming().createdAt <= request.time &&
+                       isValidReport(incoming());
+      allow update, delete: if isAdmin();
+    }
+
+    // 6. Admins
+    match /admins/{adminId} {
+      allow get: if isSignedIn() && request.auth.uid == adminId;
+      allow list, create, update, delete: if false;
+    }
+  }
+}

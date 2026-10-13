@@ -1,0 +1,6 @@
+{
+  "name": "MONKHULE",
+  "description": "Speak. Share. Feel Better. Anonymous emotional venting, public discussions, fair price discovery, and supportive community.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
